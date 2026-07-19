@@ -51,6 +51,10 @@
   .pill-btn.on { background: var(--highlight); border-color: var(--highlight); }
 
   .cam-bottom { position: relative; z-index: 2; padding: 14px 18px 26px; }
+  .color-row { display: flex; gap: 8px; margin-bottom: 12px; }
+  .color-btn { flex: 1; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 14px; padding: 11px; font-size: 0.82rem; font-weight: 700; }
+  .color-btn.active { background: var(--highlight); border-color: var(--highlight); }
   .sens-row { display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,0.5); border-radius: 16px;
     padding: 10px 16px; margin-bottom: 12px; }
   .sens-row label { font-size: 0.72rem; font-weight: 800; color: #fff; white-space: nowrap; }
@@ -74,7 +78,7 @@
   <header>
     <div class="eyebrow">Real-time colour filter, not AI guessing</div>
     <h1>🔍 Golf Ball Finder</h1>
-    <p>Points your camera at the rough and paints anything that looks like a white golf ball in bright pink, so it pops out of the grass.</p>
+    <p>Points your camera at the rough and paints anything that looks like your ball colour in bright pink, so it pops out of the grass. Works for white or optic yellow balls.</p>
   </header>
 
   <div class="card">
@@ -83,7 +87,7 @@
   </div>
 
   <div class="how-it-works">
-    <b>How it works:</b> every pixel from your camera is checked in real time — is it bright, and is it close to white (low colour saturation)? Pixels that match get painted pink; everything else stays as normal video. It's simple colour maths, not object recognition, so it works best on a plain white ball against green grass, rough or leaves. Use the sensitivity slider to tune it for shade, dew or a dirty ball.
+    <b>How it works:</b> every pixel from your camera is checked in real time against your chosen ball colour — bright and low-saturation for white, or the right hue and brightness for optic yellow. Pixels that match get painted pink; everything else stays as normal video. It's simple colour maths, not object recognition, so it works best against green grass, rough or leaves. Use the sensitivity slider to tune it for shade, dew or a dirty ball.
   </div>
 </div>
 
@@ -97,6 +101,10 @@
   <video id="video" autoplay playsinline muted></video>
   <div style="flex:1"></div>
   <div class="cam-bottom">
+    <div class="color-row">
+      <button class="color-btn active" id="colorWhiteBtn" data-color="white">⚪ White</button>
+      <button class="color-btn" id="colorYellowBtn" data-color="yellow">🟡 Yellow</button>
+    </div>
     <div class="sens-row">
       <label>Sensitivity</label>
       <input type="range" id="sensSlider" min="0" max="100" value="50">
@@ -118,6 +126,7 @@ let running = false;
 let frozen = false;
 let stream = null;
 let sensitivity = 50;
+let ballColor = "white";
 let torchOn = false;
 let torchTrack = null;
 let wakeLock = null;
@@ -174,6 +183,34 @@ function stopCamera() {
   releaseWakeLock();
 }
 
+// Higher sensitivity = more permissive thresholds (catches shaded/dirty/wet balls, more false positives).
+function isBallPixel(r, g, b) {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const v = max / 255;
+  const s = max === 0 ? 0 : (max - min) / max;
+
+  if (ballColor === "white") {
+    const satMax = 0.12 + (sensitivity / 100) * 0.30;
+    const valMin = 0.80 - (sensitivity / 100) * 0.35;
+    return s <= satMax && v >= valMin;
+  }
+
+  // Optic yellow: needs real saturation/brightness plus a hue close to pure yellow (60°).
+  const satMin = 0.55 - (sensitivity / 100) * 0.30;
+  const valMin = 0.55 - (sensitivity / 100) * 0.25;
+  const hueHalfWidth = 12 + (sensitivity / 100) * 15;
+  if (s < satMin || v < valMin) return false;
+  const d = max - min;
+  let h;
+  if (d === 0) h = 0;
+  else if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return Math.abs(h - 60) <= hueHalfWidth;
+}
+
 function processFrame() {
   if (!running) return;
   if (frozen) { requestAnimationFrame(processFrame); return; }
@@ -189,16 +226,8 @@ function processFrame() {
   const frame = ctx.getImageData(0, 0, w, h);
   const data = frame.data;
 
-  // Higher sensitivity = more permissive thresholds (catches shaded/dirty balls, more false positives).
-  const satMax = 0.12 + (sensitivity / 100) * 0.30;
-  const valMin = 0.80 - (sensitivity / 100) * 0.35;
-
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-    const v = max / 255;
-    const s = max === 0 ? 0 : (max - min) / max;
-    if (s <= satMax && v >= valMin) {
+    if (isBallPixel(data[i], data[i + 1], data[i + 2])) {
       data[i] = 255; data[i + 1] = 15; data[i + 2] = 190; // bright pink highlight
     }
   }
@@ -208,6 +237,13 @@ function processFrame() {
 
 $("startBtn").addEventListener("click", startCamera);
 $("backBtn").addEventListener("click", stopCamera);
+
+document.querySelectorAll(".color-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    ballColor = btn.dataset.color;
+    document.querySelectorAll(".color-btn").forEach(b => b.classList.toggle("active", b === btn));
+  });
+});
 
 $("sensSlider").addEventListener("input", (e) => {
   sensitivity = Number(e.target.value);
