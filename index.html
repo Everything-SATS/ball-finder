@@ -120,6 +120,22 @@ let stream = null;
 let sensitivity = 50;
 let torchOn = false;
 let torchTrack = null;
+let wakeLock = null;
+
+// Keeps the screen on while actively scanning for the ball - you're holding the phone up and
+// scanning the ground, not looking at the screen, so it must not lock/dim mid-search.
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try { wakeLock = await navigator.wakeLock.request("screen"); }
+  catch (e) { wakeLock = null; }
+}
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+document.addEventListener("visibilitychange", () => {
+  // The OS auto-releases the lock when the tab is hidden - re-acquire it on return if still scanning.
+  if (document.visibilityState === "visible" && running) requestWakeLock();
+});
 
 async function startCamera() {
   try {
@@ -142,6 +158,7 @@ async function startCamera() {
   running = true;
   frozen = false;
   requestAnimationFrame(processFrame);
+  requestWakeLock();
 }
 
 function stopCamera() {
@@ -154,6 +171,7 @@ function stopCamera() {
   $("torchBtn").classList.remove("on");
   $("camOverlay").classList.remove("active");
   $("introWrap").style.display = "";
+  releaseWakeLock();
 }
 
 function processFrame() {
