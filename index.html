@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Golf Ball Finder</title>
+<meta name="theme-color" content="#0E1A12">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ball Finder">
+<style>
+  :root {
+    --bg: #0E1A12; --surface: #16281B; --card: #1B3021; --ink: #F1F6F1; --ink-soft: #93A896;
+    --line: #2B4433; --accent: #4CAF50; --accent-ink: #08150A; --danger: #E0574A; --highlight: #FF2FB0;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; height: 100%; overscroll-behavior-y: contain; }
+  body { background: var(--bg); color: var(--ink); font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  button { font-family: inherit; }
+
+  /* ---- Start / intro screen ---- */
+  .wrap { max-width: 460px; margin: 0 auto; padding: 28px 20px 40px; }
+  header { text-align: center; margin-bottom: 18px; }
+  header .eyebrow { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: var(--highlight); }
+  header h1 { font-size: 1.7rem; font-weight: 900; margin: 8px 0 6px; }
+  header p { color: var(--ink-soft); font-size: 0.85rem; line-height: 1.5; max-width: 340px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 20px; text-align: center; }
+  .start-btn { width: 100%; background: var(--highlight); color: #fff; border: none;
+    font-weight: 800; font-size: 1rem; padding: 15px; border-radius: 14px; cursor: pointer; }
+  .hint { font-size: 0.78rem; color: var(--ink-soft); text-align: center; max-width: 300px;
+    margin: 14px auto 0; line-height: 1.5; }
+  .how-it-works { background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+    padding: 14px 16px; margin-top: 16px; font-size: 0.78rem; color: var(--ink-soft); line-height: 1.6; }
+  .how-it-works b { color: var(--ink); }
+
+  /* ---- Live camera view ---- */
+  .cam-overlay { position: fixed; inset: 0; background: #05100a; z-index: 20; display: none; flex-direction: column; }
+  .cam-overlay.active { display: flex; }
+  #outCanvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #0a1a10; }
+  video { display: none; }
+
+  .cam-top { position: relative; z-index: 2; display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 14px 0; }
+  .pill-btn { background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 20px; padding: 9px 15px; font-size: 0.78rem; font-weight: 700; }
+  .pill-btn.on { background: var(--highlight); border-color: var(--highlight); }
+
+  .cam-bottom { position: relative; z-index: 2; padding: 14px 18px 26px; }
+  .sens-row { display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,0.5); border-radius: 16px;
+    padding: 10px 16px; margin-bottom: 12px; }
+  .sens-row label { font-size: 0.72rem; font-weight: 800; color: #fff; white-space: nowrap; }
+  .sens-row input[type="range"] { flex: 1; accent-color: var(--highlight); }
+  .sens-val { font-size: 0.72rem; font-weight: 800; color: var(--highlight); width: 28px; text-align: right; }
+
+  .cam-actions { display: flex; gap: 10px; }
+  .cam-actions button { flex: 1; background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 14px; padding: 13px; font-size: 0.85rem; font-weight: 700; }
+  .cam-actions button.freeze-on { background: var(--highlight); border-color: var(--highlight); }
+
+  .cam-status { position: absolute; top: 60px; left: 0; right: 0; text-align: center; z-index: 2;
+    color: #fff; font-size: 0.78rem; font-weight: 700; text-shadow: 0 1px 4px rgba(0,0,0,0.7); }
+
+  .footer-note { text-align: center; color: var(--ink-soft); font-size: 0.74rem; margin-top: 26px; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<div class="wrap" id="introWrap">
+  <header>
+    <div class="eyebrow">Real-time colour filter, not AI guessing</div>
+    <h1>🔍 Golf Ball Finder</h1>
+    <p>Points your camera at the rough and paints anything that looks like a white golf ball in bright pink, so it pops out of the grass.</p>
+  </header>
+
+  <div class="card">
+    <button class="start-btn" id="startBtn">▶ Start Camera</button>
+    <div class="hint" style="margin-top:14px;">Your phone will ask for camera access — needed to scan for the ball.</div>
+  </div>
+
+  <div class="how-it-works">
+    <b>How it works:</b> every pixel from your camera is checked in real time — is it bright, and is it close to white (low colour saturation)? Pixels that match get painted pink; everything else stays as normal video. It's simple colour maths, not object recognition, so it works best on a plain white ball against green grass, rough or leaves. Use the sensitivity slider to tune it for shade, dew or a dirty ball.
+  </div>
+</div>
+
+<div class="cam-overlay" id="camOverlay">
+  <div class="cam-top">
+    <button class="pill-btn" id="backBtn">← Back</button>
+    <button class="pill-btn" id="torchBtn" hidden>🔦 Torch</button>
+  </div>
+  <div class="cam-status" id="camStatus"></div>
+  <canvas id="outCanvas"></canvas>
+  <video id="video" autoplay playsinline muted></video>
+  <div style="flex:1"></div>
+  <div class="cam-bottom">
+    <div class="sens-row">
+      <label>Sensitivity</label>
+      <input type="range" id="sensSlider" min="0" max="100" value="50">
+      <span class="sens-val" id="sensVal">50</span>
+    </div>
+    <div class="cam-actions">
+      <button id="freezeBtn">❄ Freeze Frame</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $("video");
+const canvas = $("outCanvas");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+let running = false;
+let frozen = false;
+let stream = null;
+let sensitivity = 50;
+let torchOn = false;
+let torchTrack = null;
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (e) {
+    $("camStatus").textContent = "Camera unavailable — check permissions";
+  }
+  $("introWrap").style.display = "none";
+  $("camOverlay").classList.add("active");
+  if (stream) {
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) {
+      torchTrack = track;
+      $("torchBtn").hidden = false;
+    }
+  }
+  running = true;
+  frozen = false;
+  requestAnimationFrame(processFrame);
+}
+
+function stopCamera() {
+  running = false;
+  frozen = false;
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  torchTrack = null;
+  torchOn = false;
+  $("torchBtn").hidden = true;
+  $("torchBtn").classList.remove("on");
+  $("camOverlay").classList.remove("active");
+  $("introWrap").style.display = "";
+}
+
+function processFrame() {
+  if (!running) return;
+  if (frozen) { requestAnimationFrame(processFrame); return; }
+
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) { requestAnimationFrame(processFrame); return; }
+
+  const scale = Math.min(1, 640 / vw);
+  const w = Math.round(vw * scale), h = Math.round(vh * scale);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+
+  ctx.drawImage(video, 0, 0, w, h);
+  const frame = ctx.getImageData(0, 0, w, h);
+  const data = frame.data;
+
+  // Higher sensitivity = more permissive thresholds (catches shaded/dirty balls, more false positives).
+  const satMax = 0.12 + (sensitivity / 100) * 0.30;
+  const valMin = 0.80 - (sensitivity / 100) * 0.35;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const v = max / 255;
+    const s = max === 0 ? 0 : (max - min) / max;
+    if (s <= satMax && v >= valMin) {
+      data[i] = 255; data[i + 1] = 15; data[i + 2] = 190; // bright pink highlight
+    }
+  }
+  ctx.putImageData(frame, 0, 0);
+  requestAnimationFrame(processFrame);
+}
+
+$("startBtn").addEventListener("click", startCamera);
+$("backBtn").addEventListener("click", stopCamera);
+
+$("sensSlider").addEventListener("input", (e) => {
+  sensitivity = Number(e.target.value);
+  $("sensVal").textContent = sensitivity;
+});
+
+$("freezeBtn").addEventListener("click", () => {
+  frozen = !frozen;
+  $("freezeBtn").textContent = frozen ? "▶ Resume" : "❄ Freeze Frame";
+  $("freezeBtn").classList.toggle("freeze-on", frozen);
+});
+
+$("torchBtn").addEventListener("click", async () => {
+  if (!torchTrack) return;
+  torchOn = !torchOn;
+  try { await torchTrack.applyConstraints({ advanced: [{ torch: torchOn }] }); }
+  catch (e) { torchOn = !torchOn; }
+  $("torchBtn").classList.toggle("on", torchOn);
+});
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js", { scope: "/ball-finder/" }).catch(() => {});
+}
+</script>
+</body>
+</html>
