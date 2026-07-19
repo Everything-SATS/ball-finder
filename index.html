@@ -70,11 +70,34 @@
     color: #fff; font-size: 0.78rem; font-weight: 700; text-shadow: 0 1px 4px rgba(0,0,0,0.7); }
 
   .footer-note { text-align: center; color: var(--ink-soft); font-size: 0.74rem; margin-top: 26px; line-height: 1.6; }
+
+  /* ---- Lock screen ---- */
+  .lock-wrap { max-width: 340px; margin: 0 auto; padding: 80px 20px 40px; text-align: center; }
+  .lock-wrap .lock-icon { font-size: 2.4rem; margin-bottom: 10px; }
+  .lock-wrap h1 { font-size: 1.3rem; font-weight: 900; margin: 0 0 8px; }
+  .lock-wrap p { color: var(--ink-soft); font-size: 0.82rem; line-height: 1.5; margin: 0 0 22px; }
+  #lockInput { width: 100%; background: var(--card); border: 1px solid var(--line); color: var(--ink);
+    font-size: 1.4rem; font-weight: 800; letter-spacing: 0.4em; text-align: center; padding: 14px;
+    border-radius: 14px; margin-bottom: 14px; }
+  #lockInput.shake { animation: lock-shake 0.35s; border-color: var(--danger); }
+  @keyframes lock-shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+  .lock-btn { width: 100%; background: var(--highlight); color: #fff; border: none;
+    font-weight: 800; font-size: 1rem; padding: 15px; border-radius: 14px; cursor: pointer; }
+  .lock-error { color: var(--danger); font-size: 0.78rem; font-weight: 700; margin-top: 10px; min-height: 18px; }
 </style>
 </head>
 <body>
 
-<div class="wrap" id="introWrap">
+<div class="lock-wrap" id="lockWrap" hidden>
+  <div class="lock-icon">🔒</div>
+  <h1>Golf Ball Finder</h1>
+  <p>Enter the code to open the app.</p>
+  <input type="password" id="lockInput" inputmode="numeric" maxlength="8" autocomplete="off">
+  <button class="lock-btn" id="lockBtn">Unlock</button>
+  <div class="lock-error" id="lockError"></div>
+</div>
+
+<div class="wrap" id="introWrap" hidden>
   <header>
     <div class="eyebrow">Real-time colour filter, not AI guessing</div>
     <h1>🔍 Golf Ball Finder</h1>
@@ -118,6 +141,41 @@
 
 <script>
 const $ = id => document.getElementById(id);
+
+// ---- Lock screen: simple client-side code, not real security (this is a static site with no
+// backend, so anyone could view-source the code) - just stops casual opening. Change LOCK_CODE
+// to whatever you like. Remembered in localStorage after the first correct entry.
+const LOCK_CODE = "2580";
+const LOCK_KEY = "ballFinderUnlocked";
+
+function showApp() {
+  $("lockWrap").hidden = true;
+  $("introWrap").hidden = false;
+}
+
+function tryUnlock() {
+  const input = $("lockInput");
+  if (input.value === LOCK_CODE) {
+    localStorage.setItem(LOCK_KEY, "1");
+    showApp();
+  } else {
+    input.classList.remove("shake");
+    void input.offsetWidth; // restart the animation if it's already mid-shake
+    input.classList.add("shake");
+    $("lockError").textContent = "Wrong code — try again.";
+    input.value = "";
+    input.focus();
+  }
+}
+
+if (localStorage.getItem(LOCK_KEY) === "1") {
+  showApp();
+} else {
+  $("lockWrap").hidden = false;
+  $("lockBtn").addEventListener("click", tryUnlock);
+  $("lockInput").addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock(); });
+}
+
 const video = $("video");
 const canvas = $("outCanvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
