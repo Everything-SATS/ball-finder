@@ -121,7 +121,7 @@
     </ol>
   </div>
 
-  <div class="version-footer">v1.9</div>
+  <div class="version-footer">v2.0</div>
 </div>
 
 <div class="cam-overlay" id="camOverlay">
@@ -204,17 +204,17 @@ let wakeLock = null;
 let beepEnabled = true;
 let audioCtx = null;
 let lastBeepTime = 0;
-let peakDensity = 0;
+let peakBlobPixels = 0;
 
-// Metal-detector-style audio feedback: beeps faster and higher-pitched the more of the *centre*
-// of frame currently matches (not the whole frame - at any real scanning distance the ball is a
-// tiny fraction of the full picture, so whole-frame density stayed near-zero even with the ball
-// dead centre). CENTER_FRAC is the fraction of width/height counted as "aimed at". The real fix
-// for false triggering turned out to be the colour thresholds in isBallPixel() being far too
-// loose (matching ordinary bright surfaces, not just a ball) - see the comments there.
-const CENTER_FRAC = 0.5;
-const BEEP_MIN_DENSITY = 0.006;   // below this (~0.6% of the box), stay silent
-const BEEP_MAX_DENSITY = 0.12;    // at/above this (~12% of the box), beeps at the fastest rate
+// Metal-detector-style audio feedback: driven directly by the size (in pixels) of the largest
+// valid ball-shaped blob found ANYWHERE on screen - not a fraction of some on-screen "aim box".
+// An earlier version required matches to fall inside a centre box to count, which meant a ball
+// clearly highlighted pink (correct colour+shape detection) could still produce no beep at all
+// just because it was outside that box. The size/shape filter in processFrame() already does the
+// real work of rejecting non-ball matches, so no positional restriction is needed on top of it -
+// if it's pink on screen, it should be audible too.
+const BEEP_MIN_BLOB_PIXELS = 20;    // below this, stay silent - treat as noise, not a real match
+const BEEP_MAX_BLOB_PIXELS = 2500;  // at/above this, beeps at the fastest rate (large/close ball)
 const BEEP_MAX_INTERVAL_MS = 480;
 const BEEP_MIN_INTERVAL_MS = 65;
 const PEAK_HOLD_DECAY = 0.90;     // per-frame decay - holds a brief spike for a few hundred ms so a
@@ -245,10 +245,10 @@ function playBeep(strength) {
   osc.stop(ctx.currentTime + 0.1);
 }
 
-function updateBeepDetector(centerDensity) {
-  peakDensity = Math.max(centerDensity, peakDensity * PEAK_HOLD_DECAY);
-  if (!beepEnabled || peakDensity < BEEP_MIN_DENSITY) return;
-  const strength = Math.min(1, (peakDensity - BEEP_MIN_DENSITY) / (BEEP_MAX_DENSITY - BEEP_MIN_DENSITY));
+function updateBeepDetector(bestBlobPixels) {
+  peakBlobPixels = Math.max(bestBlobPixels, peakBlobPixels * PEAK_HOLD_DECAY);
+  if (!beepEnabled || peakBlobPixels < BEEP_MIN_BLOB_PIXELS) return;
+  const strength = Math.min(1, (peakBlobPixels - BEEP_MIN_BLOB_PIXELS) / (BEEP_MAX_BLOB_PIXELS - BEEP_MIN_BLOB_PIXELS));
   const interval = BEEP_MAX_INTERVAL_MS - strength * (BEEP_MAX_INTERVAL_MS - BEEP_MIN_INTERVAL_MS);
   const now = performance.now();
   if (now - lastBeepTime >= interval) {
@@ -274,7 +274,7 @@ document.addEventListener("visibilitychange", () => {
 
 async function startCamera() {
   ensureAudioCtx(); // create/resume within this user-gesture handler so iOS doesn't block it later
-  peakDensity = 0;
+  peakBlobPixels = 0;
   lastBeepTime = 0;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
@@ -326,13 +326,12 @@ function isBallPixel(r, g, b) {
     // bouncing off surrounding grass - at very low saturation the hue reading is mostly noise
     // anyway, and clearly-green grass (sunlit tips, leaves) is never this close to neutral.
     if (s > 0.08 && g > r * 1.05 && g > b * 1.05) return false;
-    // Tight on purpose: a real white golf ball is close to pure white (very low saturation,
-    // very high brightness). Ordinary bright/pale surfaces - walls, worktops, ceilings, indoor
-    // lighting - are common false positives at looser thresholds, and often read as MORE
-    // "white" than the ball itself (matte dimpled surface vs a glossy wall/counter), so err
-    // strict here rather than permissive.
-    const satMax = 0.05 + (sensitivity / 100) * 0.13;
-    const valMin = 0.82 - (sensitivity / 100) * 0.20;
+    // Deliberately more forgiving than it sounds: the size/shape filter in processFrame() now
+    // does most of the work rejecting walls, sky and grass patches (they're the wrong size or
+    // shape, whatever their colour), so this just needs to catch the ball's lit surface,
+    // including its shaded/dimpled parts, without being so strict it misses most of it.
+    const satMax = 0.08 + (sensitivity / 100) * 0.22;
+    const valMin = 0.68 - (sensitivity / 100) * 0.28;
     return s <= satMax && v >= valMin;
   }
 
@@ -359,9 +358,11 @@ let maskBuf = null, labelBuf = null, stackBuf = null;
 // whole wall, a patch of sky, or a big stretch of grass from lighting up and beeping - those are
 // all valid COLOUR matches, but they're nothing like the size or shape of a golf ball, and pure
 // colour thresholds alone can never tell them apart.
-const BLOB_MAX_FRAC = 0.22;        // reject a blob wider or taller than this fraction of the frame
-const BLOB_MIN_COMPACTNESS = 0.35; // pixel count / bounding-box area - rejects thin streaks/lines
-                                    // (branch gaps, glare) while tolerating an imperfect round ball
+const BLOB_MAX_FRAC = 0.32;        // reject a blob wider or taller than this fraction of the frame
+const BLOB_MIN_COMPACTNESS = 0.15; // pixel count / bounding-box area - loose on purpose: outdoors
+                                    // only the sunlit part of a ball's dimpled surface usually
+                                    // passes a strict colour test, so real matches are often a
+                                    // partial crescent, not a filled disc
 
 function processFrame() {
   if (!running) return;
@@ -390,6 +391,8 @@ function processFrame() {
   }
 
   const blobValid = [];
+  const blobCount = [];
+  let bestBlobPixels = 0;
   for (let start = 0; start < maskBuf.length; start++) {
     if (!maskBuf[start] || labelBuf[start]) continue;
     const blobId = blobValid.length + 1;
@@ -412,34 +415,21 @@ function processFrame() {
     }
     const bw = maxX - minX + 1, bh = maxY - minY + 1;
     const compactness = count / (bw * bh);
-    blobValid.push(bw <= w * BLOB_MAX_FRAC && bh <= h * BLOB_MAX_FRAC && compactness >= BLOB_MIN_COMPACTNESS);
+    const valid = bw <= w * BLOB_MAX_FRAC && bh <= h * BLOB_MAX_FRAC && compactness >= BLOB_MIN_COMPACTNESS;
+    blobValid.push(valid);
+    blobCount.push(count);
+    if (valid && count > bestBlobPixels) bestBlobPixels = count;
   }
 
-  const boxW = w * CENTER_FRAC, boxH = h * CENTER_FRAC;
-  const boxX0 = (w - boxW) / 2, boxX1 = boxX0 + boxW;
-  const boxY0 = (h - boxH) / 2, boxY1 = boxY0 + boxH;
-  const centerTotal = Math.max(1, Math.round(boxW) * Math.round(boxH));
-  let centerMatch = 0;
-
-  for (let y = 0, p = 0, i = 0; y < h; y++) {
-    const inBoxY = y >= boxY0 && y < boxY1;
-    for (let x = 0; x < w; x++, p++, i += 4) {
-      const label = labelBuf[p];
-      if (label && blobValid[label - 1]) {
-        data[i] = 255; data[i + 1] = 15; data[i + 2] = 190; // bright pink highlight
-        if (inBoxY && x >= boxX0 && x < boxX1) centerMatch++;
-      }
+  for (let p = 0, i = 0; p < maskBuf.length; p++, i += 4) {
+    const label = labelBuf[p];
+    if (label && blobValid[label - 1]) {
+      data[i] = 255; data[i + 1] = 15; data[i + 2] = 190; // bright pink highlight
     }
   }
   ctx.putImageData(frame, 0, 0);
 
-  // Outline the aim box so it's clear where the beep detector is actually "listening" -
-  // matches outside it (e.g. grass at the frame edges) don't drive the beep at all.
-  ctx.strokeStyle = "rgba(255,255,255,0.55)";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(boxX0, boxY0, boxW, boxH);
-
-  updateBeepDetector(centerMatch / centerTotal);
+  updateBeepDetector(bestBlobPixels);
   requestAnimationFrame(processFrame);
 }
 
