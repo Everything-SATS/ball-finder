@@ -205,11 +205,13 @@ let peakDensity = 0;
 
 // Metal-detector-style audio feedback: beeps faster and higher-pitched the more of the *centre*
 // of frame currently matches (not the whole frame - at any real scanning distance the ball is a
-// tiny fraction of the full picture, mostly grass, so whole-frame density stayed near-zero even
-// with the ball dead centre). CENTER_FRAC is the fraction of width/height counted as "aimed at".
-const CENTER_FRAC = 0.45;
-const BEEP_MIN_DENSITY = 0.01;    // below this (~1% of the centre box), stay silent
-const BEEP_MAX_DENSITY = 0.20;    // at/above this (~20% of the centre box), beeps at the fastest rate
+// tiny fraction of the full picture, so whole-frame density stayed near-zero even with the ball
+// dead centre). CENTER_FRAC is the fraction of width/height counted as "aimed at". The real fix
+// for false triggering turned out to be the colour thresholds in isBallPixel() being far too
+// loose (matching ordinary bright surfaces, not just a ball) - see the comments there.
+const CENTER_FRAC = 0.5;
+const BEEP_MIN_DENSITY = 0.006;   // below this (~0.6% of the box), stay silent
+const BEEP_MAX_DENSITY = 0.12;    // at/above this (~12% of the box), beeps at the fastest rate
 const BEEP_MAX_INTERVAL_MS = 480;
 const BEEP_MIN_INTERVAL_MS = 65;
 const PEAK_HOLD_DECAY = 0.90;     // per-frame decay - holds a brief spike for a few hundred ms so a
@@ -318,8 +320,13 @@ function isBallPixel(r, g, b) {
     // dew glare) if green is the dominant channel - the saturation/brightness test alone
     // can't tell that apart from a genuine white ball, since it never looks at hue.
     if (g > r * 1.05 && g > b * 1.05) return false;
-    const satMax = 0.12 + (sensitivity / 100) * 0.30;
-    const valMin = 0.80 - (sensitivity / 100) * 0.35;
+    // Tight on purpose: a real white golf ball is close to pure white (very low saturation,
+    // very high brightness). Ordinary bright/pale surfaces - walls, worktops, ceilings, indoor
+    // lighting - are common false positives at looser thresholds, and often read as MORE
+    // "white" than the ball itself (matte dimpled surface vs a glossy wall/counter), so err
+    // strict here rather than permissive.
+    const satMax = 0.05 + (sensitivity / 100) * 0.13;
+    const valMin = 0.82 - (sensitivity / 100) * 0.20;
     return s <= satMax && v >= valMin;
   }
 
