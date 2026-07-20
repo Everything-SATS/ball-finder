@@ -318,8 +318,11 @@ function isBallPixel(r, g, b) {
   if (ballColor === "white") {
     // Green rejection: a bright, desaturated pixel can still clearly be grass (sunlit tips,
     // dew glare) if green is the dominant channel - the saturation/brightness test alone
-    // can't tell that apart from a genuine white ball, since it never looks at hue.
-    if (g > r * 1.05 && g > b * 1.05) return false;
+    // can't tell that apart from a genuine white ball, since it never looks at hue. Gated on
+    // s > 0.08 so it doesn't reject a real ball picking up a faint green tint from light
+    // bouncing off surrounding grass - at very low saturation the hue reading is mostly noise
+    // anyway, and clearly-green grass (sunlit tips, leaves) is never this close to neutral.
+    if (s > 0.08 && g > r * 1.05 && g > b * 1.05) return false;
     // Tight on purpose: a real white golf ball is close to pure white (very low saturation,
     // very high brightness). Ordinary bright/pale surfaces - walls, worktops, ceilings, indoor
     // lighting - are common false positives at looser thresholds, and often read as MORE
@@ -346,6 +349,17 @@ function isBallPixel(r, g, b) {
   return Math.abs(h - 60) <= hueHalfWidth;
 }
 
+let maskBuf = null, labelBuf = null, stackBuf = null;
+
+// Size/shape filtering: groups matching pixels into blobs (connected-component labelling) and
+// only accepts ones roughly golf-ball-sized and golf-ball-shaped. This is what actually stops a
+// whole wall, a patch of sky, or a big stretch of grass from lighting up and beeping - those are
+// all valid COLOUR matches, but they're nothing like the size or shape of a golf ball, and pure
+// colour thresholds alone can never tell them apart.
+const BLOB_MAX_FRAC = 0.22;        // reject a blob wider or taller than this fraction of the frame
+const BLOB_MIN_COMPACTNESS = 0.35; // pixel count / bounding-box area - rejects thin streaks/lines
+                                    // (branch gaps, glare) while tolerating an imperfect round ball
+
 function processFrame() {
   if (!running) return;
   if (frozen) { requestAnimationFrame(processFrame); return; }
@@ -355,11 +369,48 @@ function processFrame() {
 
   const scale = Math.min(1, 480 / vw);
   const w = Math.round(vw * scale), h = Math.round(vh * scale);
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    maskBuf = new Uint8Array(w * h);
+    labelBuf = new Int32Array(w * h);
+    stackBuf = new Int32Array(w * h);
+  }
 
   ctx.drawImage(video, 0, 0, w, h);
   const frame = ctx.getImageData(0, 0, w, h);
   const data = frame.data;
+
+  maskBuf.fill(0);
+  labelBuf.fill(0);
+  for (let p = 0, i = 0; p < maskBuf.length; p++, i += 4) {
+    if (isBallPixel(data[i], data[i + 1], data[i + 2])) maskBuf[p] = 1;
+  }
+
+  const blobValid = [];
+  for (let start = 0; start < maskBuf.length; start++) {
+    if (!maskBuf[start] || labelBuf[start]) continue;
+    const blobId = blobValid.length + 1;
+    let sp = 0;
+    stackBuf[sp++] = start;
+    labelBuf[start] = blobId;
+    let count = 0, minX = w, maxX = 0, minY = h, maxY = 0;
+    while (sp > 0) {
+      const p = stackBuf[--sp];
+      const py = (p / w) | 0, px = p - py * w;
+      count++;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+      if (px > 0) { const n = p - 1; if (maskBuf[n] && !labelBuf[n]) { labelBuf[n] = blobId; stackBuf[sp++] = n; } }
+      if (px < w - 1) { const n = p + 1; if (maskBuf[n] && !labelBuf[n]) { labelBuf[n] = blobId; stackBuf[sp++] = n; } }
+      if (py > 0) { const n = p - w; if (maskBuf[n] && !labelBuf[n]) { labelBuf[n] = blobId; stackBuf[sp++] = n; } }
+      if (py < h - 1) { const n = p + w; if (maskBuf[n] && !labelBuf[n]) { labelBuf[n] = blobId; stackBuf[sp++] = n; } }
+    }
+    const bw = maxX - minX + 1, bh = maxY - minY + 1;
+    const compactness = count / (bw * bh);
+    blobValid.push(bw <= w * BLOB_MAX_FRAC && bh <= h * BLOB_MAX_FRAC && compactness >= BLOB_MIN_COMPACTNESS);
+  }
 
   const boxW = w * CENTER_FRAC, boxH = h * CENTER_FRAC;
   const boxX0 = (w - boxW) / 2, boxX1 = boxX0 + boxW;
@@ -367,12 +418,11 @@ function processFrame() {
   const centerTotal = Math.max(1, Math.round(boxW) * Math.round(boxH));
   let centerMatch = 0;
 
-  for (let y = 0; y < h; y++) {
+  for (let y = 0, p = 0, i = 0; y < h; y++) {
     const inBoxY = y >= boxY0 && y < boxY1;
-    const rowBase = y * w * 4;
-    for (let x = 0; x < w; x++) {
-      const i = rowBase + x * 4;
-      if (isBallPixel(data[i], data[i + 1], data[i + 2])) {
+    for (let x = 0; x < w; x++, p++, i += 4) {
+      const label = labelBuf[p];
+      if (label && blobValid[label - 1]) {
         data[i] = 255; data[i + 1] = 15; data[i + 2] = 190; // bright pink highlight
         if (inBoxY && x >= boxX0 && x < boxX1) centerMatch++;
       }
