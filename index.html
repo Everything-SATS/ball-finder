@@ -121,7 +121,7 @@
     </ol>
   </div>
 
-  <div class="version-footer">v2.0</div>
+  <div class="version-footer">v2.1</div>
 </div>
 
 <div class="cam-overlay" id="camOverlay">
@@ -326,6 +326,10 @@ function isBallPixel(r, g, b) {
     // bouncing off surrounding grass - at very low saturation the hue reading is mostly noise
     // anyway, and clearly-green grass (sunlit tips, leaves) is never this close to neutral.
     if (s > 0.08 && g > r * 1.05 && g > b * 1.05) return false;
+    // Brown/tan rejection: dry dirt, sand, dead grass, bark and wood commonly read as a warm
+    // orange-brown at moderate saturation - reject if red is clearly the dominant channel, same
+    // saturation gate as the green check so it doesn't touch a near-neutral white ball.
+    if (s > 0.08 && r > g * 1.05 && r > b * 1.15) return false;
     // Deliberately more forgiving than it sounds: the size/shape filter in processFrame() now
     // does most of the work rejecting walls, sky and grass patches (they're the wrong size or
     // shape, whatever their colour), so this just needs to catch the ball's lit surface,
