@@ -110,14 +110,17 @@
   </div>
 
   <div class="how-it-works">
-    <b>How it works:</b> every pixel from your camera is checked in real time against your chosen ball colour — bright and low-saturation for white, or the right hue and brightness for optic yellow. Pixels that match get painted pink; everything else stays as normal video. It's simple colour maths, not object recognition, so it works best against green grass, rough or leaves. Use the sensitivity slider to tune it for shade, dew or a dirty ball.
+    <b>How it works:</b> every pixel from your camera is checked in real time against your chosen ball colour — bright and low-saturation for white, or the right hue and brightness for optic yellow — with green rejected explicitly so sunlit grass and dew glare don't light up. Pixels that match get painted pink; everything else stays as normal video. Use the sensitivity slider to tune it for shade, dew or a dirty ball. A metal-detector-style beep speeds up the more of the frame matches, so you can scan by ear — mute it any time with the 🔊 button.
   </div>
 </div>
 
 <div class="cam-overlay" id="camOverlay">
   <div class="cam-top">
     <button class="pill-btn" id="backBtn">← Back</button>
-    <button class="pill-btn" id="torchBtn" hidden>🔦 Torch</button>
+    <div style="display:flex;gap:8px;">
+      <button class="pill-btn on" id="beepBtn">🔊 Beep</button>
+      <button class="pill-btn" id="torchBtn" hidden>🔦 Torch</button>
+    </div>
   </div>
   <div class="cam-status" id="camStatus"></div>
   <canvas id="outCanvas"></canvas>
@@ -188,6 +191,51 @@ let ballColor = "white";
 let torchOn = false;
 let torchTrack = null;
 let wakeLock = null;
+let beepEnabled = true;
+let audioCtx = null;
+let lastBeepTime = 0;
+
+// Metal-detector-style audio feedback: beeps faster and higher-pitched the more of the frame
+// currently matches, so you can scan by ear while walking instead of staring at the screen.
+const BEEP_MIN_DENSITY = 0.002;   // below this (~0.2% of frame), stay silent - ignores stray noise pixels
+const BEEP_MAX_DENSITY = 0.08;    // at/above this (~8% of frame), beeps at the fastest rate
+const BEEP_MAX_INTERVAL_MS = 900;
+const BEEP_MIN_INTERVAL_MS = 120;
+
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioCtx = new AC();
+  }
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+
+function playBeep(strength) {
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = 700 + strength * 500;
+  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.28, ctx.currentTime + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.09);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.1);
+}
+
+function updateBeepDetector(density) {
+  if (!beepEnabled || density < BEEP_MIN_DENSITY) return;
+  const strength = Math.min(1, (density - BEEP_MIN_DENSITY) / (BEEP_MAX_DENSITY - BEEP_MIN_DENSITY));
+  const interval = BEEP_MAX_INTERVAL_MS - strength * (BEEP_MAX_INTERVAL_MS - BEEP_MIN_INTERVAL_MS);
+  const now = performance.now();
+  if (now - lastBeepTime >= interval) {
+    playBeep(strength);
+    lastBeepTime = now;
+  }
+}
 
 // Keeps the screen on while actively scanning for the ball - you're holding the phone up and
 // scanning the ground, not looking at the screen, so it must not lock/dim mid-search.
@@ -205,6 +253,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function startCamera() {
+  ensureAudioCtx(); // create/resume within this user-gesture handler so iOS doesn't block it later
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
   } catch (e) {
@@ -248,6 +297,10 @@ function isBallPixel(r, g, b) {
   const s = max === 0 ? 0 : (max - min) / max;
 
   if (ballColor === "white") {
+    // Green rejection: a bright, desaturated pixel can still clearly be grass (sunlit tips,
+    // dew glare) if green is the dominant channel - the saturation/brightness test alone
+    // can't tell that apart from a genuine white ball, since it never looks at hue.
+    if (g > r * 1.05 && g > b * 1.05) return false;
     const satMax = 0.12 + (sensitivity / 100) * 0.30;
     const valMin = 0.80 - (sensitivity / 100) * 0.35;
     return s <= satMax && v >= valMin;
@@ -284,17 +337,27 @@ function processFrame() {
   const frame = ctx.getImageData(0, 0, w, h);
   const data = frame.data;
 
+  let matchCount = 0;
+  const totalPixels = data.length / 4;
   for (let i = 0; i < data.length; i += 4) {
     if (isBallPixel(data[i], data[i + 1], data[i + 2])) {
       data[i] = 255; data[i + 1] = 15; data[i + 2] = 190; // bright pink highlight
+      matchCount++;
     }
   }
   ctx.putImageData(frame, 0, 0);
+  updateBeepDetector(matchCount / totalPixels);
   requestAnimationFrame(processFrame);
 }
 
 $("startBtn").addEventListener("click", startCamera);
 $("backBtn").addEventListener("click", stopCamera);
+
+$("beepBtn").addEventListener("click", () => {
+  beepEnabled = !beepEnabled;
+  $("beepBtn").classList.toggle("on", beepEnabled);
+  $("beepBtn").textContent = beepEnabled ? "🔊 Beep" : "🔇 Beep";
+});
 
 document.querySelectorAll(".color-btn").forEach(btn => {
   btn.addEventListener("click", () => {
